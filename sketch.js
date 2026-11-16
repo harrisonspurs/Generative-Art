@@ -20,6 +20,12 @@ let keyboardPerson;
 let connection = 0;
 let pairMidpoint;
 
+// Camera tracking — one real person replaces the keyboard visitor.
+// Falls back gracefully to keyboard control if no body is detected.
+let bodyPose;
+let capture;
+let trackedPose = null; // the most recently detected pose, or null
+
 function setup() {
   createCanvas(windowWidth, windowHeight);
   setScale();
@@ -31,7 +37,26 @@ function setup() {
 
   // The two visitors start apart, so they have to walk towards each other
   mousePerson = new Person("mouse", color(214, 105, 60), width * 0.35, height / 2);
-  keyboardPerson = new Person("keyboard", color(70, 135, 170), width * 0.65, height / 2);
+  keyboardPerson = new Person("camera", color(70, 135, 170), width * 0.65, height / 2);
+
+  // Start the webcam (hidden — we only need its data, not the video feed)
+  capture = createCapture(VIDEO, { flipped: false });
+  capture.size(640, 480);
+  capture.hide();
+
+  // ml5 BodyPose with MoveNet — fast single-pose model, good enough overhead
+  bodyPose = ml5.bodyPose("MoveNet", { flipped: false }, () => {
+    bodyPose.detectStart(capture, onPose);
+  });
+}
+
+// Called by ml5 each time it has a new set of poses
+function onPose(poses) {
+  if (poses && poses.length > 0) {
+    trackedPose = poses[0];
+  } else {
+    trackedPose = null;
+  }
 }
 
 function setScale() {
@@ -176,19 +201,52 @@ class Person {
 
     if (this.type === "mouse") {
       this.position.set(mouseX, mouseY);
-    } else {
-      const step = (2 * metre) / 100;
-      if (keyIsDown(LEFT_ARROW) || keyIsDown(65)) this.velocity.x = -step;
-      else if (keyIsDown(RIGHT_ARROW) || keyIsDown(68)) this.velocity.x = step;
-      else this.velocity.x = 0;
 
-      if (keyIsDown(UP_ARROW) || keyIsDown(87)) this.velocity.y = -step;
-      else if (keyIsDown(DOWN_ARROW) || keyIsDown(83)) this.velocity.y = step;
-      else this.velocity.y = 0;
+    } else if (this.type === "camera") {
+      // Use the torso midpoint (average of left & right hip) if available,
+      // falling back to the nose — both are visible from directly overhead.
+      // Camera coords (640×480) are mapped to canvas size.
+      const pose = trackedPose;
+      if (pose) {
+        const lh = pose.left_hip;
+        const rh = pose.right_hip;
+        const nose = pose.nose;
 
-      this.position.add(this.velocity);
-      this.position.x = constrain(this.position.x, 0, width);
-      this.position.y = constrain(this.position.y, 0, height);
+        let camX, camY;
+        if (lh && rh && lh.confidence > 0.2 && rh.confidence > 0.2) {
+          camX = (lh.x + rh.x) / 2;
+          camY = (lh.y + rh.y) / 2;
+        } else if (nose && nose.confidence > 0.2) {
+          camX = nose.x;
+          camY = nose.y;
+        } else {
+          // No confident landmark — hold position
+          camX = null;
+        }
+
+        if (camX !== null) {
+          // Map from camera resolution to canvas size.
+          // If your camera is mounted so that left/right or up/down are
+          // flipped relative to the projection, swap the map ranges here.
+          const canvasX = map(camX, 0, 640, 0, width);
+          const canvasY = map(camY, 0, 480, 0, height);
+          this.position.set(canvasX, canvasY);
+        }
+      } else {
+        // No pose detected — fall back to keyboard so the demo still works
+        const step = (2 * metre) / 100;
+        if (keyIsDown(LEFT_ARROW) || keyIsDown(65)) this.velocity.x = -step;
+        else if (keyIsDown(RIGHT_ARROW) || keyIsDown(68)) this.velocity.x = step;
+        else this.velocity.x = 0;
+
+        if (keyIsDown(UP_ARROW) || keyIsDown(87)) this.velocity.y = -step;
+        else if (keyIsDown(DOWN_ARROW) || keyIsDown(83)) this.velocity.y = step;
+        else this.velocity.y = 0;
+
+        this.position.add(this.velocity);
+        this.position.x = constrain(this.position.x, 0, width);
+        this.position.y = constrain(this.position.y, 0, height);
+      }
     }
 
     this.speed = lerp(this.speed, p5.Vector.dist(before, this.position), 0.12);
