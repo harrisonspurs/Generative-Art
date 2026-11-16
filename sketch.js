@@ -70,6 +70,7 @@ class Agent {
     this.noiseSpeed = random(0.005, 0.012);
     this.politeness = random(0.85, 1.15); // some give more room than others
     this.size = random(BODY_M * 0.9, BODY_M * 1.15);
+    this.grey = random(40, 70); // everyone looks slightly different
   }
 
   // Metres per second into pixels per frame
@@ -153,8 +154,10 @@ class Agent {
 
   show() {
     noStroke();
-    fill(55);
-    ellipse(this.position.x, this.position.y, this.size * metre);
+    fill(this.grey);
+    // A very slight size breath as they move: bodies in motion, not stamps.
+    const breath = 1 + 0.08 * sin(this.noiseOffset * 8);
+    ellipse(this.position.x, this.position.y, this.size * metre * breath);
   }
 }
 
