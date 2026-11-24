@@ -20,7 +20,7 @@
       top: 14px;
       right: 16px;
       font: 11px/1.5 'Space Mono', monospace, monospace;
-      color: rgba(245,242,236,0.4);
+      color: rgba(40,40,40,0.55);
       pointer-events: none;
       white-space: pre;
       z-index: 10;
@@ -30,7 +30,7 @@
 <body>
   <div id="hand-status">hands: —</div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.1/lib/p5.min.js"></script>
   <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
   <script src="sketch.js"></script>
 
@@ -38,8 +38,13 @@
     // Update the status badge every 200ms so you can see what's being tracked
     setInterval(() => {
       const el = document.getElementById('hand-status');
+      el.style.display = (typeof devMode !== 'undefined' && devMode) ? 'none' : 'block';
+      if (typeof cameraStatus !== 'undefined' && cameraStatus !== 'tracking') {
+        el.textContent = cameraStatus + '   ·   P = dev view';
+        return;
+      }
       if (typeof trackedHands === 'undefined' || !trackedHands.length) {
-        el.textContent = 'hands: —';
+        el.textContent = 'hands: —   ·   P = dev view';
         return;
       }
       const labels = trackedHands.map(h =>

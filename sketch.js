@@ -27,6 +27,9 @@ let pairMidpoint;
 let handPose;
 let capture;
 let trackedHands = []; // array of detected hand objects from ml5
+let handTips = { orange: null, blue: null }; // fingertip positions on the canvas this frame
+let devMode = false; // press P to see the camera and the tracked hands
+let cameraStatus = "starting camera…";
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -41,20 +44,42 @@ function setup() {
   mousePerson = new Person("mouse", color(214, 105, 60), width * 0.35, height / 2);
   keyboardPerson = new Person("camera", color(70, 135, 170), width * 0.65, height / 2);
 
-  // Start the webcam (hidden — we only need its data, not the video feed)
-  capture = createCapture(VIDEO, { flipped: true }); // mirror so left/right feel natural
+  startCamera();
+}
+
+function startCamera() {
+  // The browser only allows the camera on https:// or http://localhost
+  // (VS Code Live Server is fine; double-clicking index.html may not be).
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    cameraStatus = "camera blocked: open via Live Server (http://127.0.0.1), not file://";
+    return;
+  }
+  if (typeof ml5 === "undefined") {
+    cameraStatus = "ml5 didn't load: check your internet connection";
+    return;
+  }
+
+  // Mirrored, so moving your hand left moves the dot left
+  capture = createCapture(
+    { video: { width: 640, height: 480 }, audio: false },
+    { flipped: true }
+  );
   capture.size(640, 480);
   capture.hide();
+  capture.elt.addEventListener("loadeddata", () => {
+    cameraStatus = "camera on, loading hand model…";
+  });
 
-  // ml5 HandPose — detects up to 2 hands, gives 21 landmarks per hand.
-  // 'maxNumHands: 2' lets it track both hands simultaneously.
-  handPose = ml5.handPose({ maxNumHands: 2, flipped: true }, () => {
+  // ml5 HandPose: up to 2 hands, 21 landmarks each
+  handPose = ml5.handPose({ maxHands: 2, flipped: true }, () => {
+    cameraStatus = "hand model starting…";
     handPose.detectStart(capture, onHands);
   });
 }
 
 // Called by ml5 each frame with all detected hands
 function onHands(hands) {
+  cameraStatus = "tracking"; // only set once the model is genuinely returning results
   trackedHands = hands || [];
 }
 
@@ -64,6 +89,16 @@ function setScale() {
 }
 
 function draw() {
+  assignHands();
+
+  if (devMode) {
+    // Still update the visitors so the piece keeps running underneath
+    mousePerson.update();
+    keyboardPerson.update();
+    drawDevView();
+    return;
+  }
+
   background(246, 244, 240, 80);
 
   mousePerson.update();
@@ -201,9 +236,8 @@ class Person {
     if (this.type === "mouse") {
       // "mouse" is now driven by the LEFT hand if one is detected,
       // otherwise falls back to the actual mouse cursor.
-      const leftHand = getHandByLabel("Left");
-      if (leftHand) {
-        applyHandToPosition(leftHand, this);
+      if (handTips.orange) {
+        this.position.lerp(handTips.orange, 0.4);
       } else {
         this.position.set(mouseX, mouseY);
       }
@@ -211,9 +245,8 @@ class Person {
     } else if (this.type === "camera") {
       // "camera" is driven by the RIGHT hand if one is detected,
       // otherwise falls back to arrow / WASD keys.
-      const rightHand = getHandByLabel("Right");
-      if (rightHand) {
-        applyHandToPosition(rightHand, this);
+      if (handTips.blue) {
+        this.position.lerp(handTips.blue, 0.4);
       } else {
         const step = (2 * metre) / 100;
         if (keyIsDown(LEFT_ARROW)  || keyIsDown(65)) this.velocity.x = -step;
@@ -247,25 +280,94 @@ class Person {
   }
 }
 
-// Return the first detected hand whose label matches (ml5 labels them "Left"/"Right"
-// from the camera's perspective — with flipped:true that matches the user's real hands).
-function getHandByLabel(label) {
-  for (const hand of trackedHands) {
-    if (hand.handedness === label && hand.confidence > 0.5) return hand;
-  }
-  return null;
+// Camera pixels → canvas pixels
+function camToCanvas(x, y) {
+  const vw = (capture && capture.elt.videoWidth) || 640;
+  const vh = (capture && capture.elt.videoHeight) || 480;
+  return createVector(map(x, 0, vw, 0, width), map(y, 0, vh, 0, height));
 }
 
-// Map the index-finger tip of a hand from camera coords to canvas coords and
-// apply it to a Person's position.  The index fingertip (keypoint 8) is the
-// most precise landmark and the natural pointer when you raise one finger.
-function applyHandToPosition(hand, person) {
-  // ml5 HandPose v1 exposes keypoints as an array; index 8 = index fingertip.
-  const tip = hand.keypoints && hand.keypoints[8];
-  if (!tip) return;
-  const canvasX = map(tip.x, 0, 640, 0, width);
-  const canvasY = map(tip.y, 0, 480, 0, height);
-  person.position.set(canvasX, canvasY);
+// Decide which hand drives which visitor this frame.
+// Uses screen position rather than ml5's Left/Right label, which can flip:
+// with two hands, the one further left is orange and the other is blue.
+// With one hand, it drives the orange dot and blue goes back to the keys.
+function assignHands() {
+  handTips.orange = null;
+  handTips.blue = null;
+
+  // Index fingertip is keypoint 8
+  const tips = trackedHands
+    .filter((h) => h.keypoints && h.keypoints[8] && (h.confidence ?? 1) > 0.5)
+    .map((h) => camToCanvas(h.keypoints[8].x, h.keypoints[8].y))
+    .sort((a, b) => a.x - b.x);
+
+  if (tips.length >= 1) handTips.orange = tips[0];
+  if (tips.length >= 2) handTips.blue = tips[1];
+}
+
+// Developer view (press P): the camera feed with every tracked hand drawn on it,
+// so you can see exactly what the model is picking up.
+const HAND_BONES = [
+  [0, 1], [1, 2], [2, 3], [3, 4],        // thumb
+  [0, 5], [5, 6], [6, 7], [7, 8],        // index
+  [5, 9], [9, 10], [10, 11], [11, 12],   // middle
+  [9, 13], [13, 14], [14, 15], [15, 16], // ring
+  [13, 17], [0, 17], [17, 18], [18, 19], [19, 20], // pinky + palm
+];
+
+function drawDevView() {
+  background(15);
+
+  if (capture && capture.elt.readyState >= 2) {
+    tint(255, 200);
+    image(capture, 0, 0, width, height);
+    noTint();
+  }
+
+  // Skeleton for every hand
+  for (const hand of trackedHands) {
+    if (!hand.keypoints) continue;
+    const pts = hand.keypoints.map((k) => camToCanvas(k.x, k.y));
+    stroke(255, 255, 255, 180);
+    strokeWeight(2);
+    for (const [a, b] of HAND_BONES) {
+      if (pts[a] && pts[b]) line(pts[a].x, pts[a].y, pts[b].x, pts[b].y);
+    }
+    noStroke();
+    fill(255);
+    for (const p of pts) ellipse(p.x, p.y, 6);
+  }
+
+  // The fingertips actually driving the visitors, in their colours
+  noFill();
+  strokeWeight(3);
+  if (handTips.orange) {
+    stroke(mousePerson.colour);
+    ellipse(handTips.orange.x, handTips.orange.y, 34);
+  }
+  if (handTips.blue) {
+    stroke(keyboardPerson.colour);
+    ellipse(handTips.blue.x, handTips.blue.y, 34);
+  }
+
+  // Readout
+  noStroke();
+  fill(0, 160);
+  rect(12, 12, 360, 96, 4);
+  fill(255);
+  textFont("monospace");
+  textSize(13);
+  textAlign(LEFT, TOP);
+  const labels = trackedHands
+    .map((h) => `${h.handedness || "?"} ${round((h.confidence ?? 0) * 100)}%`)
+    .join("   ");
+  text(
+    `DEV VIEW  (press P to go back)\n` +
+      `status: ${cameraStatus}\n` +
+      `hands: ${trackedHands.length ? labels : "none"}\n` +
+      `connection: ${nf(connection, 1, 2)}`,
+    22, 22
+  );
 }
 
 function mousePressed() {
@@ -378,6 +480,7 @@ function drawConnection() {
 }
 
 function keyPressed() {
+  if (key === "p" || key === "P") devMode = !devMode;
   return false;
 }
 
