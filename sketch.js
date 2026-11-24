@@ -20,11 +20,13 @@ let keyboardPerson;
 let connection = 0;
 let pairMidpoint;
 
-// Camera tracking — one real person replaces the keyboard visitor.
-// Falls back gracefully to keyboard control if no body is detected.
-let bodyPose;
+// Hand tracking — each detected hand drives one visitor dot.
+// Left hand  → mousePerson  (orange dot)
+// Right hand → keyboardPerson (blue dot)
+// If only one hand is in frame the other falls back to mouse / keyboard.
+let handPose;
 let capture;
-let trackedPose = null; // the most recently detected pose, or null
+let trackedHands = []; // array of detected hand objects from ml5
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -40,23 +42,20 @@ function setup() {
   keyboardPerson = new Person("camera", color(70, 135, 170), width * 0.65, height / 2);
 
   // Start the webcam (hidden — we only need its data, not the video feed)
-  capture = createCapture(VIDEO, { flipped: false });
+  capture = createCapture(VIDEO, { flipped: true }); // mirror so left/right feel natural
   capture.size(640, 480);
   capture.hide();
 
-  // ml5 BodyPose with MoveNet — fast single-pose model, good enough overhead
-  bodyPose = ml5.bodyPose("MoveNet", { flipped: false }, () => {
-    bodyPose.detectStart(capture, onPose);
+  // ml5 HandPose — detects up to 2 hands, gives 21 landmarks per hand.
+  // 'maxNumHands: 2' lets it track both hands simultaneously.
+  handPose = ml5.handPose({ maxNumHands: 2, flipped: true }, () => {
+    handPose.detectStart(capture, onHands);
   });
 }
 
-// Called by ml5 each time it has a new set of poses
-function onPose(poses) {
-  if (poses && poses.length > 0) {
-    trackedPose = poses[0];
-  } else {
-    trackedPose = null;
-  }
+// Called by ml5 each frame with all detected hands
+function onHands(hands) {
+  trackedHands = hands || [];
 }
 
 function setScale() {
@@ -200,47 +199,29 @@ class Person {
     const before = this.position.copy();
 
     if (this.type === "mouse") {
-      this.position.set(mouseX, mouseY);
+      // "mouse" is now driven by the LEFT hand if one is detected,
+      // otherwise falls back to the actual mouse cursor.
+      const leftHand = getHandByLabel("Left");
+      if (leftHand) {
+        applyHandToPosition(leftHand, this);
+      } else {
+        this.position.set(mouseX, mouseY);
+      }
 
     } else if (this.type === "camera") {
-      // Use the torso midpoint (average of left & right hip) if available,
-      // falling back to the nose — both are visible from directly overhead.
-      // Camera coords (640×480) are mapped to canvas size.
-      const pose = trackedPose;
-      if (pose) {
-        const lh = pose.left_hip;
-        const rh = pose.right_hip;
-        const nose = pose.nose;
-
-        let camX, camY;
-        if (lh && rh && lh.confidence > 0.2 && rh.confidence > 0.2) {
-          camX = (lh.x + rh.x) / 2;
-          camY = (lh.y + rh.y) / 2;
-        } else if (nose && nose.confidence > 0.2) {
-          camX = nose.x;
-          camY = nose.y;
-        } else {
-          // No confident landmark — hold position
-          camX = null;
-        }
-
-        if (camX !== null) {
-          // Map from camera resolution to canvas size.
-          // If your camera is mounted so that left/right or up/down are
-          // flipped relative to the projection, swap the map ranges here.
-          const canvasX = map(camX, 0, 640, 0, width);
-          const canvasY = map(camY, 0, 480, 0, height);
-          this.position.set(canvasX, canvasY);
-        }
+      // "camera" is driven by the RIGHT hand if one is detected,
+      // otherwise falls back to arrow / WASD keys.
+      const rightHand = getHandByLabel("Right");
+      if (rightHand) {
+        applyHandToPosition(rightHand, this);
       } else {
-        // No pose detected — fall back to keyboard so the demo still works
         const step = (2 * metre) / 100;
-        if (keyIsDown(LEFT_ARROW) || keyIsDown(65)) this.velocity.x = -step;
+        if (keyIsDown(LEFT_ARROW)  || keyIsDown(65)) this.velocity.x = -step;
         else if (keyIsDown(RIGHT_ARROW) || keyIsDown(68)) this.velocity.x = step;
         else this.velocity.x = 0;
 
-        if (keyIsDown(UP_ARROW) || keyIsDown(87)) this.velocity.y = -step;
-        else if (keyIsDown(DOWN_ARROW) || keyIsDown(83)) this.velocity.y = step;
+        if (keyIsDown(UP_ARROW)   || keyIsDown(87)) this.velocity.y = -step;
+        else if (keyIsDown(DOWN_ARROW)  || keyIsDown(83)) this.velocity.y = step;
         else this.velocity.y = 0;
 
         this.position.add(this.velocity);
@@ -264,6 +245,27 @@ class Person {
     fill(this.colour);
     ellipse(this.position.x, this.position.y, 0.5 * metre);
   }
+}
+
+// Return the first detected hand whose label matches (ml5 labels them "Left"/"Right"
+// from the camera's perspective — with flipped:true that matches the user's real hands).
+function getHandByLabel(label) {
+  for (const hand of trackedHands) {
+    if (hand.handedness === label && hand.confidence > 0.5) return hand;
+  }
+  return null;
+}
+
+// Map the index-finger tip of a hand from camera coords to canvas coords and
+// apply it to a Person's position.  The index fingertip (keypoint 8) is the
+// most precise landmark and the natural pointer when you raise one finger.
+function applyHandToPosition(hand, person) {
+  // ml5 HandPose v1 exposes keypoints as an array; index 8 = index fingertip.
+  const tip = hand.keypoints && hand.keypoints[8];
+  if (!tip) return;
+  const canvasX = map(tip.x, 0, 640, 0, width);
+  const canvasY = map(tip.y, 0, 480, 0, height);
+  person.position.set(canvasX, canvasY);
 }
 
 function mousePressed() {
